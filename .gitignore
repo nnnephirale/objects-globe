@@ -1,0 +1,10 @@
+# reference footage — someone else's video, kept locally only
+*.mp4
+
+# machine-local Claude Code permissions
+.claude/settings.local.json
+
+# scratch
+frames/
+node_modules/
+.DS_Store
