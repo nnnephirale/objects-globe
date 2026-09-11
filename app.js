@@ -4,7 +4,7 @@
 
 const DEFAULTS = {
   cols: 9, colsAuto: true, rows: 10, rowsAuto: true,
-  gap: 0.06, spread: 2.0, offset: 0.5, crop: 0.2, radius: 0.03,
+  gap: 0.06, spread: 2.0, offset: 0.5, crop: 0.2, radius: 0.03, drift: 0.04,
   globeSize: 0.60, tileScale: 0.95, taper: 0,
   spin: 0.16, tilt: 0.05, dur: 1.6, stagger: 0.55, bulge: 0.10,
   backs: true, loop: false, dwell: 4,
@@ -75,7 +75,8 @@ const idbClear = () => tx('readwrite', s => s.clear());
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setClearColor(new THREE.Color(S.bgColor), 1);
-document.body.appendChild(renderer.domElement);
+const frameEl = document.getElementById('frame');
+frameEl.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const CAM_Z = 10, FOV = 32;
@@ -134,7 +135,8 @@ function makeMaterial(tex, aspect, opts = {}) {
 
 const view = { w: 0, h: 0, vw: 0, vh: 0 };
 function resize() {
-  const w = innerWidth, h = innerHeight;
+  const rect = frameEl.getBoundingClientRect();
+  const w = Math.round(rect.width), h = Math.round(rect.height);
   if (!w || !h) return;                   // a 0-sized canvas makes the projection NaN
   view.w = w; view.h = h;
   camera.aspect = w / h;
@@ -152,8 +154,11 @@ addEventListener('resize', resize);
 let images = [];
 
 async function decode(blob) {
-  const bmp = await createImageBitmap(blob);
+  // three ignores texture.flipY for ImageBitmap sources, so pre-flip the bitmap
+  // itself and disable three's flip — otherwise every photo uploads upside down.
+  const bmp = await createImageBitmap(blob, { imageOrientation: 'flipY' });
   const tex = new THREE.Texture(bmp);
+  tex.flipY = false;
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
@@ -489,7 +494,7 @@ function rebuildLayout() {
         mesh, u,
         flat: new THREE.Vector3(cx, cy, 0), fw, fh,
         dir, q, sw: fw * sc * taper, sh: fh * sc * taper,
-        delay: (0.5 - Math.abs(u)) * 2, onSphere
+        delay: (0.5 - Math.abs(u)) * 2, onSphere, row: rowN - 1
       });
     }
     y -= r.h + gapW;
@@ -584,6 +589,7 @@ let p = 0, target = 0;            // 0 = grid, 1 = globe
 let pFrom = 0, tStart = performance.now(), pSpan = 1;
 let yaw = 0, pitch = 0, vYaw = 0, vPitch = 0, dragging = false;
 let loopTimer = 0;
+let scrollAcc = 0;               // endless horizontal drift of the flat grid
 
 const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 const smooth = (a, b, x) => { const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -615,15 +621,23 @@ function frame(now) {
   _e.set(pitch + S.tilt * p, yaw, 0, 'XYZ');
   _qs.setFromEuler(_e);
 
+  // rows drift sideways in alternating directions, endlessly — the flat sheet is
+  // periodic across gridW, so wrapX turns the slide into a seamless cyclic loop.
+  // Fades out with the wrap (×(1−p)) so it never disturbs the sphere mapping.
+  scrollAcc += dt * S.drift * gridW;
+  const drift = scrollAcc * (1 - p);
+
   const span = 1 + S.stagger;
   for (const t of tiles) {
     const e = ease(THREE.MathUtils.clamp(p * span - t.delay * S.stagger, 0, 1));
     const m = t.mesh;
 
+    const fx = wrapX(t.flat.x + (t.row & 1 ? -drift : drift), gridW);
+
     _v.copy(t.dir).applyQuaternion(_qs);                    // world normal
     _v2.copy(_v).multiplyScalar(R * (1 + Math.sin(Math.PI * e) * S.bulge));
     m.position.set(
-      THREE.MathUtils.lerp(t.flat.x, _v2.x, e),
+      THREE.MathUtils.lerp(fx, _v2.x, e),
       THREE.MathUtils.lerp(t.flat.y, _v2.y, e),
       THREE.MathUtils.lerp(t.flat.z, _v2.z, e)
     );
@@ -800,7 +814,7 @@ const syncColors = [
 
 function applyBg() {
   renderer.setClearColor(new THREE.Color(S.bgColor), 1);
-  document.body.style.background = S.bgColor;
+  frameEl.style.background = S.bgColor;
 }
 
 const REBUILD = new Set(['cols', 'rows', 'gap', 'spread', 'offset', 'crop', 'globeSize', 'tileScale', 'taper',
