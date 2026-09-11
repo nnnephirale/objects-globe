@@ -268,7 +268,6 @@ canvas{display:block}
         <button class="tab" role="tab" data-pane="images" aria-selected="true">Images</button>
         <button class="tab" role="tab" data-pane="grid" aria-selected="false">Grid</button>
         <button class="tab" role="tab" data-pane="globe" aria-selected="false">Globe</button>
-        <button class="tab" role="tab" data-pane="text" aria-selected="false">Text</button>
       </div>
       <button class="iconbtn" id="closeBtn" style="width:30px;height:30px;border:0;background:transparent;box-shadow:none" aria-label="Close">
         <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -299,6 +298,12 @@ canvas{display:block}
         <div class="sec">Frame</div>
         <div data-slider="crop" data-label="Crop" data-min="0" data-max="1" data-step="0.01" data-fmt="%"></div>
         <div data-slider="radius" data-label="Radius" data-min="0" data-max="0.5" data-step="0.01" data-fmt="%"></div>
+        <div class="sec">Page</div>
+        <div class="row"><label>Backdrop</label>
+          <span class="swatch"><input type="color" id="bgColor"></span>
+          <input type="text" class="hex" id="bgHex" spellcheck="false">
+        </div>
+        <div class="btnrow"><button class="btn quiet" id="resetBtn">Reset all</button></div>
       </div>
 
       <div class="pane" data-pane="globe">
@@ -318,25 +323,6 @@ canvas{display:block}
         <div data-slider="dwell" data-label="Hold" data-min="1" data-max="12" data-step="0.5" data-fmt="s"></div>
       </div>
 
-      <div class="pane" data-pane="text">
-        <div class="sec">Word</div>
-        <div class="row"><label for="word">Text</label><input type="text" id="word" spellcheck="false" placeholder="OBJECTS"></div>
-        <div class="row"><label>Colour</label>
-          <span class="swatch"><input type="color" id="textColor"></span>
-          <input type="text" class="hex" id="textHex" spellcheck="false">
-        </div>
-        <div class="sec">Placement</div>
-        <div data-slider="textSize" data-label="Size" data-min="0.05" data-max="0.6" data-step="0.01" data-fmt="%"></div>
-        <div data-slider="textTrack" data-label="Track" data-min="0.6" data-max="2" data-step="0.02" data-fmt="x"></div>
-        <div data-slider="textLat" data-label="Height" data-min="-0.8" data-max="0.8" data-step="0.02" data-fmt="x"></div>
-        <div data-slider="textLift" data-label="Lift" data-min="1" data-max="1.3" data-step="0.005" data-fmt="x"></div>
-        <div class="sec">Backdrop</div>
-        <div class="row"><label>Page</label>
-          <span class="swatch"><input type="color" id="bgColor"></span>
-          <input type="text" class="hex" id="bgHex" spellcheck="false">
-        </div>
-        <div class="btnrow"><button class="btn quiet" id="resetBtn">Reset all</button></div>
-      </div>
     </div>
   </div>
 </div>

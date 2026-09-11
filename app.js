@@ -8,8 +8,6 @@ const DEFAULTS = {
   globeSize: 0.60, tileScale: 0.95, taper: 0,
   spin: 0.16, tilt: 0.05, dur: 1.6, stagger: 0.55, bulge: 0.10,
   backs: true, loop: false, dwell: 4,
-  word: 'OBJECTS', textColor: '#bdbdbd', textSize: 0.13,
-  textTrack: 1.0, textLat: 0.0, textLift: 1.06,
   bgColor: '#ffffff'
 };
 
@@ -490,17 +488,20 @@ function rebuildLayout() {
       mesh.frustumCulled = false;
       tileGroup.add(mesh);
 
+      // Stagger purely by row height, so the sheet closes as clean top-to-bottom
+      // rows. Any horizontal weight here puts tiles within a row out of phase — the
+      // edges lag the centre and read as stragglers drifting in alone.
+      const delay = THREE.MathUtils.clamp((gridH / 2 - cy) / gridH, 0, 1);
+
       tiles.push({
         mesh, u,
         flat: new THREE.Vector3(cx, cy, 0), fw, fh,
         dir, q, sw: fw * sc * taper, sh: fh * sc * taper,
-        delay: (0.5 - Math.abs(u)) * 2, onSphere, row: rowN - 1
+        delay, onSphere, row: rowN - 1
       });
     }
     y -= r.h + gapW;
   }
-
-  buildText();
 }
 
 function applyCover(mat, imgAspect, targetAspect) {
@@ -514,75 +515,6 @@ function applyCover(mat, imgAspect, targetAspect) {
   }
 }
 
-/* ───────────────────────── word on the sphere ─────────────── */
-
-let letters = [];
-const textGroup = new THREE.Group();
-scene.add(textGroup);
-
-function letterTexture(ch, color) {
-  const FS = 110, pad = 4;
-  const m = document.createElement('canvas').getContext('2d');
-  m.font = `500 ${FS}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
-  const w = Math.ceil(m.measureText(ch).width) + pad * 2;
-  const h = Math.round(FS * 1.34);
-  const c = document.createElement('canvas');
-  c.width = Math.max(w, 4); c.height = h;
-  const g = c.getContext('2d');
-  g.font = m.font; g.fillStyle = color;
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText(ch, c.width / 2, c.height / 2 + FS * 0.03);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  tex.needsUpdate = true;
-  return { tex, aspect: c.width / c.height };
-}
-
-function buildText() {
-  letters.forEach(l => { l.mesh.material.uniforms.uMap.value.dispose(); l.mesh.material.dispose(); textGroup.remove(l.mesh); });
-  letters = [];
-  const word = (S.word || '').toUpperCase();
-  if (!word.trim() || !R) return;
-
-  const H = S.textSize * R * 1.34;
-  const lat = S.textLat * (Math.PI / 2) * 0.85;
-  const ring = Math.max(R * Math.cos(lat), 1e-3);
-
-  const glyphs = [...word].map(ch => {
-    if (ch === ' ') return { space: true, w: H * 0.42 };
-    const { tex, aspect } = letterTexture(ch, S.textColor);
-    return { tex, aspect, w: H * aspect };
-  });
-
-  const track = H * 0.10 * (S.textTrack * 2 - 1.6);
-  const total = glyphs.reduce((s, g) => s + g.w, 0) + track * (glyphs.length - 1);
-  let x = -total / 2;
-
-  for (const g of glyphs) {
-    const cx = x + g.w / 2;
-    x += g.w + track;
-    if (g.space) continue;
-    const lon = cx / ring;
-    const dir = new THREE.Vector3(
-      Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon)
-    );
-    const q = new THREE.Quaternion();
-    const right = new THREE.Vector3(0, 1, 0).cross(dir).normalize();
-    if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
-    const up = new THREE.Vector3().crossVectors(dir, right).normalize();
-    q.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, dir));
-
-    const mat = makeMaterial(g.tex, g.aspect, { side: THREE.FrontSide, depthWrite: false });
-    const mesh = new THREE.Mesh(GEO, mat);
-    mesh.scale.set(H * g.aspect, H, 1);
-    mesh.renderOrder = 2;
-    mesh.frustumCulled = false;
-    textGroup.add(mesh);
-    letters.push({ mesh, dir, q });
-  }
-}
-
 /* ───────────────────────── morph + spin ───────────────────── */
 
 let p = 0, target = 0;            // 0 = grid, 1 = globe
@@ -592,10 +524,10 @@ let loopTimer = 0;
 let scrollAcc = 0;               // endless horizontal drift of the flat grid
 
 const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-const smooth = (a, b, x) => { const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 const _qs = new THREE.Quaternion(), _q = new THREE.Quaternion(), _qi = new THREE.Quaternion();
+const _qy = new THREE.Quaternion(), Y_AXIS = new THREE.Vector3(0, 1, 0);
 const _e = new THREE.Euler();
 
 let last = performance.now();
@@ -623,18 +555,27 @@ function frame(now) {
 
   // rows drift sideways in alternating directions, endlessly — the flat sheet is
   // periodic across gridW, so wrapX turns the slide into a seamless cyclic loop.
-  // Fades out with the wrap (×(1−p)) so it never disturbs the sphere mapping.
-  scrollAcc += dt * S.drift * gridW;
-  const drift = scrollAcc * (1 - p);
+  // Advance only while it's a grid (rate ×(1−p)) and use the raw offset: the flat
+  // contribution fades out through the morph on its own via the (1−e) lerp. An
+  // earlier version multiplied the *accumulator* by (1−p), which injected a
+  // sideways velocity proportional to the (unbounded) accumulator — so every
+  // wrap after the first grew busier the longer the session ran.
+  scrollAcc += dt * S.drift * gridW * (1 - p);
+  if (scrollAcc >= gridW) scrollAcc -= gridW;   // bounded, keeps float precision sane
+  const drift = scrollAcc;
 
   const span = 1 + S.stagger;
   for (const t of tiles) {
     const e = ease(THREE.MathUtils.clamp(p * span - t.delay * S.stagger, 0, 1));
     const m = t.mesh;
 
-    const fx = wrapX(t.flat.x + (t.row & 1 ? -drift : drift), gridW);
+    const sway = (t.row & 1 ? -drift : drift);
+    const fx = wrapX(t.flat.x + sway, gridW);
+    // the same sideways drift expressed as a longitude turn, so a drifted row folds
+    // straight onto a matching ring instead of streaking across to its baked slot
+    _qy.setFromAxisAngle(Y_AXIS, (sway / gridW) * Math.PI * 2);
 
-    _v.copy(t.dir).applyQuaternion(_qs);                    // world normal
+    _v.copy(t.dir).applyQuaternion(_qy).applyQuaternion(_qs);   // world normal
     _v2.copy(_v).multiplyScalar(R * (1 + Math.sin(Math.PI * e) * S.bulge));
     m.position.set(
       THREE.MathUtils.lerp(fx, _v2.x, e),
@@ -642,7 +583,7 @@ function frame(now) {
       THREE.MathUtils.lerp(t.flat.z, _v2.z, e)
     );
 
-    _q.copy(_qs).multiply(t.q);
+    _q.copy(_qs).multiply(_qy).multiply(t.q);
     m.quaternion.copy(_qi.identity()).slerp(_q, e);
 
     m.scale.set(
@@ -656,15 +597,6 @@ function frame(now) {
     const op = t.onSphere ? 1 : 1 - e;
     m.material.uniforms.uOpacity.value = op;
     m.visible = op > 0.01;
-  }
-
-  const tOp = smooth(0.55, 0.98, p);
-  for (const l of letters) {
-    _v.copy(l.dir).applyQuaternion(_qs).multiplyScalar(R * S.textLift);
-    l.mesh.position.copy(_v);
-    l.mesh.quaternion.copy(_qs).multiply(l.q);
-    l.mesh.material.uniforms.uOpacity.value = tOp;
-    l.mesh.visible = tOp > 0.01;
   }
 
   brand.style.color = `rgba(163,160,154,${1 - p})`;
@@ -793,7 +725,6 @@ $('#backs').onchange = e => {
   const side = S.backs ? THREE.DoubleSide : THREE.FrontSide;
   tiles.forEach(t => { t.mesh.material.side = side; t.mesh.material.needsUpdate = true; });
 };
-$('#word').oninput = e => { S.word = e.target.value; save(); buildText(); };
 
 function bindColor(pickId, hexId, key, after) {
   const pick = document.getElementById(pickId), hex = document.getElementById(hexId);
@@ -808,7 +739,6 @@ function bindColor(pickId, hexId, key, after) {
   return () => { pick.value = S[key]; hex.value = S[key]; pick.parentElement.style.background = S[key]; };
 }
 const syncColors = [
-  bindColor('textColor', 'textHex', 'textColor', () => buildText()),
   bindColor('bgColor', 'bgHex', 'bgColor', () => applyBg())
 ];
 
@@ -817,8 +747,7 @@ function applyBg() {
   frameEl.style.background = S.bgColor;
 }
 
-const REBUILD = new Set(['cols', 'rows', 'gap', 'spread', 'offset', 'crop', 'globeSize', 'tileScale', 'taper',
-  'textSize', 'textTrack', 'textLat']);
+const REBUILD = new Set(['cols', 'rows', 'gap', 'spread', 'offset', 'crop', 'globeSize', 'tileScale', 'taper']);
 function onChange(key) {
   save();
   if (REBUILD.has(key)) rebuildLayout();
@@ -829,7 +758,6 @@ function syncUI() {
   numbers.forEach(k => document.getElementById(k).value = S[k]);
   $('#loop').checked = S.loop;
   $('#backs').checked = S.backs;
-  $('#word').value = S.word;
   syncColors.forEach(fn => fn());
 }
 
