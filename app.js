@@ -4,7 +4,7 @@
 
 const DEFAULTS = {
   cols: 9, colsAuto: true, rows: 10, rowsAuto: true,
-  gap: 0.06, spread: 2.0, offset: 0.5, crop: 0.2, radius: 0.03, drift: 0.04,
+  gap: 0.06, spread: 2.0, offset: 0.5, crop: 0.2, radius: 0.03, drift: 0.01,
   globeSize: 0.60, tileScale: 0.95, taper: 0,
   spin: 0.16, tilt: 0.05, dur: 1.6, stagger: 0.55, bulge: 0.10,
   backs: true, loop: false, dwell: 4,
@@ -180,28 +180,113 @@ async function shrink(file) {
   return await new Promise(r => c.toBlob(r, png ? 'image/png' : 'image/jpeg', 0.88));
 }
 
+/* Videos and GIFs become live motion tiles; stills stay stills. Whether a given
+   codec decodes at all is the browser's call (Safari plays iPhone .mov; Chrome
+   often can't), so a source that won't decode rejects and the caller counts it
+   as unsupported. The `kind` is stored so a reload restores the right decoder. */
+const isVideo = f => (f.type || '').startsWith('video/') || /\.(mov|mp4|m4v|webm)$/i.test(f.name);
+const kindOf = f => isVideo(f) ? 'video' : f.type === 'image/gif' ? 'gif' : 'image';
+
+/* off-screen host keeps <video>/<img> connected to the document, so they keep
+   playing/animating — a detached element is frozen in most browsers */
+const mediaHost = document.createElement('div');
+mediaHost.style.cssText = 'position:fixed;left:-99999px;top:0;opacity:0;pointer-events:none';
+document.body.appendChild(mediaHost);
+
+async function decodeVideo(blob) {
+  const src = URL.createObjectURL(blob);
+  const v = document.createElement('video');
+  v.muted = true; v.loop = true; v.playsInline = true; v.autoplay = true; v.src = src;
+  mediaHost.appendChild(v);
+  try {
+    await new Promise((res, rej) => {
+      v.onloadeddata = res;
+      v.onerror = () => rej(new Error('video decode failed'));
+      setTimeout(() => rej(new Error('video load timeout')), 8000);
+    });
+  } catch (e) { v.remove(); URL.revokeObjectURL(src); throw e; }
+  try { await v.play(); } catch { /* still textures the current frame */ }
+  // Draw each frame through a 2D canvas rather than binding the <video> straight
+  // to a VideoTexture: iPhone .mov is usually HDR/Display-P3, and a raw video
+  // upload keeps that wide gamut and reads washed-out/desaturated in the sRGB
+  // pipeline. drawImage lets the browser tone-map to sRGB, exactly like photos.
+  const w0 = v.videoWidth || 16, h0 = v.videoHeight || 9;
+  const s = Math.min(1, MAX_SIDE / Math.max(w0, h0));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w0 * s)); c.height = Math.max(1, Math.round(h0 * s));
+  const ctx = c.getContext('2d');
+  try { ctx.drawImage(v, 0, 0, c.width, c.height); } catch { /* not ready yet */ }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter; tex.generateMipmaps = false;
+  return { kind: 'video', tex, aspect: w0 / h0, media: v, canvas: c, ctx,
+           srcUrl: src, url: c.toDataURL('image/jpeg', 0.7) };
+}
+
+async function decodeGif(blob) {
+  const src = URL.createObjectURL(blob);
+  const img = document.createElement('img');
+  img.decoding = 'async'; img.src = src;
+  try {
+    await img.decode().catch(() => new Promise((res, rej) => { img.onload = res; img.onerror = rej; }));
+  } catch (e) { URL.revokeObjectURL(src); throw e; }
+  mediaHost.appendChild(img);                       // must be connected to keep animating
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const s = Math.min(1, MAX_SIDE / Math.max(w, h, 1));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w * s)); c.height = Math.max(1, Math.round(h * s));
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter; tex.generateMipmaps = false;
+  return { kind: 'gif', tex, aspect: w / h || 1, media: img, canvas: c, ctx, url: src };
+}
+
+async function decodeMedia(blob, kind) {
+  if (kind === 'video' || (!kind && (blob.type || '').startsWith('video/'))) return decodeVideo(blob);
+  if (kind === 'gif' || (!kind && blob.type === 'image/gif')) return decodeGif(blob);
+  const { bmp, tex, aspect } = await decode(blob);
+  return { kind: 'image', tex, aspect, bitmap: bmp, url: URL.createObjectURL(blob) };
+}
+
 async function addFiles(files) {
-  const list = [...files].filter(f => f.type.startsWith('image/'));
+  const list = [...files].filter(f => (f.type || '').startsWith('image/') || isVideo(f));
   if (!list.length) return;
-  toast(`Adding ${list.length} image${list.length > 1 ? 's' : ''}…`);
+  toast(`Adding ${list.length} item${list.length > 1 ? 's' : ''}…`);
   let ord = images.length ? Math.max(...images.map(i => i.ord)) + 1 : 0;
+  let failed = 0;
   for (const f of list) {
+    const kind = kindOf(f);
     try {
-      const blob = await shrink(f);
-      const rec = { id: uid(), blob, ord: ord++ };
+      // stills get shrunk; videos and gifs keep their original bytes so they can play
+      const blob = kind === 'image' ? await shrink(f) : f;
+      const rec = { id: uid(), blob, ord: ord++, kind };
       await idbPut(rec);
-      const { bmp, tex, aspect } = await decode(blob);
-      images.push({ ...rec, bitmap: bmp, tex, aspect, url: URL.createObjectURL(blob) });
-    } catch (e) { console.warn('skip', f.name, e); }
+      const m = await decodeMedia(blob, kind);
+      images.push({ ...rec, ...m });
+    } catch (e) { failed++; console.warn('skip', f.name, e); }
   }
   images.sort((a, b) => a.ord - b.ord);
-  renderThumbs(); rebuildLayout(); toast(`${images.length} images`);
+  renderThumbs(); rebuildLayout();
+  toast(failed ? `${images.length} tiles · ${failed} couldn’t be read` : `${images.length} tiles`);
 }
 
 /* drop the meshes that use these textures before releasing them — a frame drawn
    against a closed ImageBitmap uploads a zero-sized texture */
 function release(list) {
-  for (const im of list) { URL.revokeObjectURL(im.url); im.tex.dispose(); im.bitmap.close?.(); }
+  for (const im of list) {
+    im.tex.dispose();
+    if (im.kind === 'video') {
+      try { im.media.pause(); } catch { /* already gone */ }
+      im.media.removeAttribute('src'); im.media.load?.(); im.media.remove();
+      URL.revokeObjectURL(im.srcUrl);        // im.url is a data: poster — nothing to revoke
+    } else if (im.kind === 'gif') {
+      im.media.remove(); URL.revokeObjectURL(im.url);
+    } else {
+      im.bitmap?.close?.(); URL.revokeObjectURL(im.url);
+    }
+  }
 }
 
 async function removeImage(id) {
@@ -301,10 +386,10 @@ async function demoSet() {
   await clearImages();
   for (let i = 0; i < DEMO.length; i++) {
     const blob = await demoBlob(i);
-    const rec = { id: uid(), blob, ord: i };
+    const rec = { id: uid(), blob, ord: i, kind: 'image' };
     await idbPut(rec);
-    const { bmp, tex, aspect } = await decode(blob);
-    images.push({ ...rec, bitmap: bmp, tex, aspect, url: URL.createObjectURL(blob) });
+    const m = await decodeMedia(blob, 'image');
+    images.push({ ...rec, ...m });
   }
   renderThumbs(); rebuildLayout();
 }
@@ -599,6 +684,15 @@ function frame(now) {
     m.visible = op > 0.01;
   }
 
+  // keep motion tiles live: redraw the current GIF/video frame onto its canvas
+  // (the drawImage also tone-maps HDR/P3 video down to sRGB), then re-upload
+  for (const im of images) {
+    if (im.kind !== 'gif' && im.kind !== 'video') continue;
+    if (im.kind === 'video' && im.media.readyState < 2) continue;
+    try { im.ctx.drawImage(im.media, 0, 0, im.canvas.width, im.canvas.height); } catch { /* frame not ready */ }
+    im.tex.needsUpdate = true;
+  }
+
   brand.style.color = `rgba(163,160,154,${1 - p})`;
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
@@ -795,9 +889,9 @@ function toast(msg) {
 
   for (const r of recs) {
     try {
-      const { bmp, tex, aspect } = await decode(r.blob);
-      images.push({ ...r, bitmap: bmp, tex, aspect, url: URL.createObjectURL(r.blob) });
-    } catch (e) { console.warn('could not decode a stored image', e); }
+      const m = await decodeMedia(r.blob, r.kind);
+      images.push({ ...r, ...m });
+    } catch (e) { console.warn('could not decode a stored item', e); }
   }
   if (!images.length) { await demoSet(); return; }
   renderThumbs(); rebuildLayout();

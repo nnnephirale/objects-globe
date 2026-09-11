@@ -277,7 +277,7 @@ canvas{display:block}
     <div class="pbody">
       <div class="pane on" data-pane="images">
         <div class="drop" id="drop">
-          Drop images here<br><em>or tap to choose</em>
+          Drop photos, GIFs or clips here<br><em>or tap to choose</em>
         </div>
         <div class="thumbs" id="thumbs"></div>
         <div class="btnrow">
@@ -294,7 +294,7 @@ canvas{display:block}
         <div data-slider="gap" data-label="Gap" data-min="0" data-max="0.3" data-step="0.005" data-fmt="%"></div>
         <div data-slider="offset" data-label="Offset" data-min="0" data-max="1" data-step="0.02" data-fmt="%"></div>
         <div data-slider="spread" data-label="Width" data-min="0.8" data-max="3" data-step="0.05" data-fmt="x"></div>
-        <div data-slider="drift" data-label="Drift" data-min="0" data-max="0.3" data-step="0.005" data-fmt="x"></div>
+        <div data-slider="drift" data-label="Speed" data-min="0" data-max="0.06" data-step="0.002" data-fmt="x"></div>
         <div class="sec">Frame</div>
         <div data-slider="crop" data-label="Crop" data-min="0" data-max="1" data-step="0.01" data-fmt="%"></div>
         <div data-slider="radius" data-label="Radius" data-min="0" data-max="0.5" data-step="0.01" data-fmt="%"></div>
@@ -329,7 +329,7 @@ canvas{display:block}
 
 <div class="veil" id="veil">Drop to add</div>
 <div class="toast" id="toast"></div>
-<input type="file" id="file" accept="image/*" multiple hidden>
+<input type="file" id="file" accept="image/*,video/*,.mov,.gif" multiple hidden>
 
 <!-- classic scripts, not modules: those are CORS-blocked on file://,
      so this page opens by double-click as well as over http -->
